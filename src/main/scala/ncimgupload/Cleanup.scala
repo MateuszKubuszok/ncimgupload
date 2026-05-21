@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.io.{FileWriter, PrintWriter}
 import java.nio.file.Path
@@ -38,7 +38,7 @@ class Cleanup(config: NkConfig, db: Db, adb: Adb, webdav: WebDav):
     if dryRun then
       Progress.info("")
       Progress.info("To delete these files from your phone, run:")
-      Progress.info(s"  nkupload cleanup --before $beforeDate --yes")
+      Progress.info(s"  ncimgupload cleanup --before $beforeDate --yes")
       return
 
     Progress.info("")

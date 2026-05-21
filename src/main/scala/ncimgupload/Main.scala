@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import mainargs.{main, arg, ParserForMethods, Flag, Leftover}
 import java.time.{Instant, LocalDate, ZoneId}
@@ -7,20 +7,29 @@ object Main:
   private var verbose = false
 
   def main(args: Array[String]): Unit =
-    ParserForMethods(this).runOrExit(args.toIndexedSeq)
+    if args.isEmpty then
+      new Interactive(None).run()
+    else
+      ParserForMethods(this).runOrExit(args.toIndexedSeq)
+
+  @main(doc = "Launch interactive TUI mode")
+  def interactive(
+      @arg(doc = "Config file path") config: Option[String] = None
+  ): Unit =
+    new Interactive(config).run()
 
   @main(doc = "Interactive first-time setup")
   def setup(
       @arg(doc = "Config file path") config: Option[String] = None
   ): Unit =
-    val configDir = os.Path(System.getProperty("user.home")) / ".config" / "nkupload"
+    val configDir = os.Path(System.getProperty("user.home")) / ".config" / "ncimgupload"
     val configFile = configDir / "config.conf"
     if os.exists(configFile) then
       Progress.info(s"Config already exists at $configFile")
       Progress.info("Edit it directly or delete it to re-run setup.")
       return
 
-    Progress.info("=== nkupload setup ===")
+    Progress.info("=== ncimgupload setup ===")
     Progress.info("")
 
     print("Nextcloud URL (e.g. https://cloud.example.com): ")
@@ -130,7 +139,8 @@ object Main:
   @main(doc = "Scan Nextcloud for photos/videos via WebDAV")
   def `scan-cloud`(
       @arg(doc = "Config file path") config: Option[String] = None,
-      @arg(short = 'v', doc = "Verbose output") verbose: Flag = Flag(false)
+      @arg(short = 'v', doc = "Verbose output") verbose: Flag = Flag(false),
+      @arg(doc = "Scan entire Nextcloud, not just cloud path") all: Flag = Flag(false)
   ): Unit =
     val cfg = NkConfig.load(config)
     this.verbose = verbose.value
@@ -138,23 +148,21 @@ object Main:
     db.init()
     val webdav = new WebDav(cfg)
 
-    Progress.info(s"Scanning ${cfg.nextcloudUrl}:/${cfg.cloudPath}/ via WebDAV...")
+    val scanPath = if all.value then "" else cfg.cloudPath
+    val scanLabel = if all.value then "all files" else s"/${cfg.cloudPath}/"
+    Progress.info(s"Scanning ${cfg.nextcloudUrl} ($scanLabel) via WebDAV...")
     val now = Instant.now().getEpochSecond
-    val scanId = db.recordScanStart("cloud", cfg.cloudPath, now)
+    val scanId = db.recordScanStart("cloud", if all.value then "/" else cfg.cloudPath, now)
 
-    val cloudInfos = webdav.propfind(cfg.cloudPath, depth = -1, verbose.value)
-    val cloudFiles = cloudInfos.filterNot(_.isCollection).filter(info =>
-      cfg.extensions.exists(ext => info.filename.toLowerCase.endsWith(ext))
-    )
+    val cloudFiles = webdav.scanCloudPath(scanPath, verbose.value)
 
-    for info <- cloudFiles do
-      val entry = FileEntry(info.relativePath, info.filename, info.size, info.mtime, info.checksum, "cloud")
-      db.upsertCloudFile(entry, info.etag, info.fileId, info.checksum, now)
-      db.markCloudFileByFilenameSize(info.filename, info.size, info.etag, info.fileId, info.checksum, now)
+    for entry <- cloudFiles do
+      db.upsertCloudFile(entry, None, None, entry.checksum, now)
+      db.markCloudFileByFilenameSize(entry.filename, entry.sizeBytes, None, None, entry.checksum, now)
 
     db.recordScanFinish(scanId, cloudFiles.size, Instant.now().getEpochSecond)
 
-    Progress.info(s"Found ${cloudFiles.size} files (${Progress.formatSize(cloudFiles.map(_.size).sum)})")
+    Progress.info(s"Found ${cloudFiles.size} files (${Progress.formatSize(cloudFiles.map(_.sizeBytes).sum)})")
     Progress.info("Scan saved to database.")
 
   @main(doc = "Run both phone and cloud scans")
@@ -184,7 +192,7 @@ object Main:
     val lastCloud = db.getLastScan("cloud")
 
     if lastPhone.isEmpty || lastCloud.isEmpty then
-      Progress.error("No scan data found. Run 'nkupload scan' first.")
+      Progress.error("No scan data found. Run 'ncimgupload scan' first.")
       sys.exit(1)
 
     def formatAgo(epoch: Long): String =
@@ -247,7 +255,7 @@ object Main:
     // TODO: batch verification - for now just report status
     Progress.info("Batch verification not yet implemented. Use 'upload --verify-checksum' for per-file verification during upload.")
 
-  @main(doc = "Delete confirmed-uploaded files from phone")
+  @main(doc = "Delete confirmed-uploaded files from phone (currently disabled)")
   def cleanup(
       @arg(doc = "Config file path") config: Option[String] = None,
       @arg(short = 'v', doc = "Verbose output") verbose: Flag = Flag(false),
@@ -255,6 +263,11 @@ object Main:
       @arg(doc = "Actually delete (default: dry-run)") yes: Flag = Flag(false),
       @arg(doc = "Only delete checksum-verified files") `verified-only`: Flag = Flag(true)
   ): Unit =
+    Progress.warn("Cleanup is currently disabled until backup reliability is proven.")
+    Progress.warn("Set NKUPLOAD_ENABLE_CLEANUP=1 environment variable to override.")
+    if sys.env.get("NKUPLOAD_ENABLE_CLEANUP").forall(_ != "1") then
+      sys.exit(1)
+
     val cfg = NkConfig.load(config)
     this.verbose = verbose.value
     val db = new Db(cfg.dbPath)
@@ -286,7 +299,7 @@ object Main:
     def formatTime(epoch: Option[Long]): String =
       epoch.map(e => Instant.ofEpochSecond(e).atZone(ZoneId.systemDefault()).toString).getOrElse("never")
 
-    Progress.info("=== nkupload status ===")
+    Progress.info("=== ncimgupload status ===")
     Progress.info(s"Database: ${cfg.dbPath}")
     Progress.info(s"Nextcloud: ${cfg.nextcloudUrl}")
     Progress.info(s"Cloud path: ${cfg.cloudPath}")

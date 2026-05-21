@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.time.Instant
 
@@ -39,7 +39,8 @@ case class DiffResult(
     missingFromCloud: Seq[FileEntry],
     missingFromPhone: Seq[FileEntry],
     matched: Seq[(FileEntry, FileEntry)],
-    sizeMismatch: Seq[(FileEntry, FileEntry)]
+    sizeMismatch: Seq[(FileEntry, FileEntry)],
+    strippedMetadata: Seq[(FileEntry, FileEntry)]
 )
 
 case class ChunkedUploadState(

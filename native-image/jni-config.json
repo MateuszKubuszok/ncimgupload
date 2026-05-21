@@ -1,0 +1,8 @@
+[
+  {
+    "name": "org.sqlite.core.NativeDB",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  }
+]

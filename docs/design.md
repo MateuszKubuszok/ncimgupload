@@ -132,7 +132,7 @@ The cleanup command is the most dangerous part of the tool. Design principles:
 2. **Interactive confirmation**: even with `--yes`, prompts "Delete N files (X GB)? [y/N]"
 3. **Verified-only default**: only deletes files whose checksums have been verified in the cloud
 4. **Pre-deletion cloud check**: HEAD request confirms each file still exists on the cloud before deleting from phone
-5. **Deletion log**: every deletion is logged with timestamp, path, size, and verification status to `~/.local/share/nkupload/cleanup.log`
+5. **Deletion log**: every deletion is logged with timestamp, path, size, and verification status to `~/.local/share/ncimgupload/cleanup.log`
 6. **Never deletes from cloud**: the tool only removes files from the phone
 7. **Date filtering required**: `--before DATE` scopes deletions to files older than a specific date
 

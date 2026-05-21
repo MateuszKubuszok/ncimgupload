@@ -1,108 +1,119 @@
-# nkupload
+# ncimgupload
 
-CLI tool to reliably sync photos and videos from an Android phone to Nextcloud.
+Standalone tool to reliably back up every photo and video from an Android phone to Nextcloud, working around the [many issues](#why-not-just-use-the-nextcloud-android-app) with the Nextcloud Android app's auto-upload.
 
-Solves the problem of the Nextcloud Android app's unreliable auto-upload by providing:
-- **Discovery**: scan phone and cloud, find which files are missing
-- **Upload**: transfer missing files via WebDAV API or desktop sync folder
-- **Cleanup**: safely delete phone files confirmed to be in the cloud
+Ships as a single native binary with an interactive TUI. No JVM, no Gradle, no dev environment needed — just download and run.
 
-## Quick start
+## Quick Start
 
 ```bash
-# Prerequisites
-brew install android-platform-tools   # ADB for phone access
-
-# Clone and build
-git clone https://github.com/yourusername/nkupload.git
-cd nkupload
-sbt compile
-
-# First-time setup (interactive)
-sbt "run setup"
-
-# Or create config manually at ~/.config/nkupload/config.conf
-# (see config.example.conf)
+# Download the binary (or build from source — see below)
+./ncimgupload
 ```
 
-## Usage
+The interactive wizard will guide you through:
+1. **ADB setup** — downloads automatically if not installed
+2. **Phone connection** — step-by-step USB debugging instructions
+3. **Nextcloud login** — URL, username, and app password
+4. **Folder selection** — pick where to store backups on Nextcloud
+5. **Scan & upload** — finds missing files and uploads them
+
+## Features
+
+- **Full-Nextcloud scan** — matches phone files against your entire Nextcloud, not just one folder. Files you've moved or organized are correctly detected as already backed up.
+- **Metadata repair** — detects files where the Nextcloud Android app stripped EXIF/GPS data (phone version is larger) and offers to re-upload the complete version.
+- **Chunked uploads** — files over 100 MB use Nextcloud's chunked upload protocol for reliability.
+- **SHA-256 verification** — every upload is checksum-verified against the server.
+- **Resumable** — SQLite state database tracks progress. Interrupted uploads can be resumed.
+- **Interactive TUI** — arrow-key menus, progress bars, guided setup. No config files to write by hand.
+- **CLI mode** — all subcommands available for scripting and power users.
+
+## CLI Commands
 
 ```bash
-# Scan phone and cloud
-sbt "run scan"
+ncimgupload                  # interactive TUI (default)
+ncimgupload interactive      # explicit TUI mode
+ncimgupload setup            # create config interactively
+ncimgupload scan             # scan phone + cloud
+ncimgupload scan-cloud --all # scan entire Nextcloud
+ncimgupload diff             # compare phone vs cloud
+ncimgupload upload           # upload missing files
+ncimgupload status           # show database summary
+ncimgupload verify           # check uploaded file integrity
+```
 
-# See what's missing
-sbt "run diff"
+## Building from Source
 
-# Upload missing files
-sbt "run upload"
-sbt "run upload --limit 10"          # upload at most 10 files
+Requires [GraalVM](https://www.graalvm.org/) with `native-image` and [sbt](https://www.scala-sbt.org/).
 
-# Check status
+```bash
+git clone git@github.com:MateuszKubuszok/ncimgupload.git
+cd ncimgupload
+sbt nativeImage              # produces target/native-image/ncimgupload
+```
+
+Or run directly via sbt (requires JVM):
+
+```bash
 sbt "run status"
-
-# Clean up old files from phone (dry-run first)
-sbt "run cleanup --before 2024-01-01"
-sbt "run cleanup --before 2024-01-01 --yes"   # actually delete
 ```
-
-## Commands
-
-| Command | Description |
-|---|---|
-| `setup` | Interactive first-time configuration |
-| `scan-phone` | Scan Android device for photos/videos via ADB |
-| `scan-cloud` | Scan Nextcloud for photos/videos via WebDAV |
-| `scan` | Run both scans |
-| `diff` | Compare phone vs cloud, show missing files |
-| `upload` | Upload missing files to Nextcloud |
-| `verify` | Verify uploaded files via checksum |
-| `cleanup` | Delete confirmed-uploaded files from phone |
-| `status` | Show database summary |
-| `reset` | Clear the tracking database |
 
 ## Configuration
 
-Config file location (searched in order):
-1. `--config PATH` flag
-2. `$NKUPLOAD_CONFIG` environment variable
-3. `~/.config/nkupload/config.conf`
-4. `./nkupload.conf`
+On first run, the wizard creates `~/.config/ncimgupload/config.conf`. You can also create it manually — see `config.example.conf`.
 
-See [config.example.conf](config.example.conf) for all options.
+Config search order: `--config` flag > `$NKUPLOAD_CONFIG` env var > `~/.config/ncimgupload/config.conf` > `./ncimgupload.conf`
 
-### Nextcloud app password
+Password can be set via `NKUPLOAD_PASSWORD` env var instead of the config file.
 
-Generate one at: Nextcloud web UI > Settings > Security > App passwords
+## Why Not Just Use the Nextcloud Android App?
 
-Set via config file or `NKUPLOAD_PASSWORD` environment variable.
+The Nextcloud Android app's auto-upload feature suffers from well-documented reliability problems. This tool exists because losing even one photo is unacceptable.
 
-### Upload modes
+### Silent upload failures
 
-- **`webdav`** (default): uploads directly to Nextcloud via WebDAV API. Files > 100MB use chunked upload with resumability.
-- **`sync-folder`**: copies files to a local folder synced by the Nextcloud desktop client. Simpler but depends on desktop sync.
+- Auto-upload stops working after app updates with no notification ([#14945](https://github.com/nextcloud/android/issues/14945), [#9320](https://github.com/nextcloud/android/issues/9320))
+- Failed uploads are never retried — files silently stay on the phone ([#14233](https://github.com/nextcloud/android/issues/14233))
+- No way to force a rescan or manually trigger upload of missed files ([#15051](https://github.com/nextcloud/android/issues/15051))
+- Upload settings silently reset to disabled after updates ([#14931](https://github.com/nextcloud/android/issues/14931))
 
-## How it works
+### Corrupted and incomplete uploads
 
-1. **Scan phone**: ADB lists files in configured directories (e.g., `DCIM/Camera/`) with sizes and timestamps
-2. **Scan cloud**: WebDAV PROPFIND lists files in the configured cloud path with metadata
-3. **Match**: files are matched by `(filename, size)` — Android camera filenames include timestamps and are practically unique
-4. **Upload**: pulls file from phone via ADB, computes SHA-256, uploads via WebDAV with `OC-Checksum` header, verifies
-5. **Cleanup**: only deletes files confirmed in cloud (with checksum verification), requires explicit `--yes` flag and interactive confirmation
+- Files arrive truncated — a 150 MB video becomes a broken 40 MB file ([#12339](https://github.com/nextcloud/android/issues/12339))
+- Multiple file uploads are incomplete without warning ([#2592](https://github.com/nextcloud/android/issues/2592))
+- Video auto-uploads produce broken files ([#841](https://github.com/nextcloud/android/issues/841))
 
-## Safety
+### Duplicate and infinite retry loops
 
-- Cleanup is **dry-run by default** — shows what would be deleted without acting
-- Requires `--yes` flag AND interactive confirmation to delete
-- Only deletes files with verified checksums by default
-- Re-checks cloud existence before each phone deletion
-- Every deletion is logged to `~/.local/share/nkupload/cleanup.log`
-- Never deletes files from the cloud
+- Uploads get stuck "waiting to upload" and re-upload duplicates endlessly ([#11485](https://github.com/nextcloud/android/issues/11485))
+- Successfully uploaded files aren't marked as done, causing infinite retries ([#16446](https://github.com/nextcloud/android/issues/16446))
+
+### EXIF/GPS metadata stripped
+
+- GPS coordinates are silently removed from uploaded photos ([#6248](https://github.com/nextcloud/android/issues/6248), [#12188](https://github.com/nextcloud/android/issues/12188))
+- The app doesn't warn that "media read-only" permission causes GPS loss ([#12973](https://github.com/nextcloud/android/issues/12973))
+- ncimgupload detects these stripped files and can re-upload the complete version
+
+### Battery and background restrictions
+
+- Auto-upload fails entirely when battery optimization is enabled ([#4815](https://github.com/nextcloud/android/issues/4815))
+- Battery saver mode completely stops uploads ([#14215](https://github.com/nextcloud/android/issues/14215))
+- App reports 16% battery usage in 6 minutes ([#16880](https://github.com/nextcloud/android/issues/16880))
+
+### Large file failures
+
+- Files over 20-30 MB fail to upload via the Android app ([#5609](https://github.com/nextcloud/android/issues/5609))
+- Restarting failed uploads crashes the app ([#11066](https://github.com/nextcloud/android/issues/11066))
+- Google Play permission changes further restrict file access ([Nextcloud blog](https://nextcloud.com/blog/nextcloud-android-file-upload-issue-google/))
 
 ## Requirements
 
-- Java 11+ (tested with 24)
-- sbt
-- ADB (`brew install android-platform-tools`)
-- USB debugging enabled on Android phone
+- Android phone with USB debugging enabled
 - Nextcloud server with WebDAV access
+- USB cable
+
+ADB is downloaded automatically on first run. No other tools required.
+
+## License
+
+Apache License 2.0

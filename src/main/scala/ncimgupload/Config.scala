@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import com.typesafe.config.{Config as TConfig, ConfigFactory}
 import java.io.File
@@ -33,32 +33,112 @@ case class NkConfig(
     val base = nextcloudUrl.stripSuffix("/")
     s"$base/remote.php/dav/uploads/$username"
 
+  def save(path: os.Path): Unit =
+    val phonePathsStr = phonePaths.map(p => s""""$p"""").mkString(", ")
+    val extensionsStr = extensions.map(e => s""""$e"""").mkString(", ")
+    val syncFolderLine = syncFolder.map(sf => s"""  sync-folder = "$sf"""").getOrElse("  # sync-folder not configured")
+    val adbLine = adbPath.map(p => s"""  path = "$p"""").getOrElse("  # path = auto-detect")
+    val content =
+      s"""nextcloud {
+         |  url = "$nextcloudUrl"
+         |  username = "$username"
+         |  password = "$password"
+         |}
+         |
+         |paths {
+         |  phone = [$phonePathsStr]
+         |  cloud = "$cloudPath"
+         |$syncFolderLine
+         |  extensions = [$extensionsStr]
+         |}
+         |
+         |upload {
+         |  chunk-threshold = $chunkThreshold
+         |  chunk-size = $chunkSize
+         |  retries = $retries
+         |  verify-checksum = $verifyChecksum
+         |  mode = "$uploadMode"
+         |}
+         |
+         |cleanup {
+         |  dry-run = $cleanupDryRun
+         |  verified-only = $cleanupVerifiedOnly
+         |}
+         |
+         |adb {
+         |$adbLine
+         |}
+         |""".stripMargin
+
+    os.makeDir.all(path / os.up)
+    os.write.over(path, content)
+    os.perms.set(path, "rw-------")
+
   override def toString: String =
     s"NkConfig(url=$nextcloudUrl, user=$username, password=***, phonePaths=$phonePaths, cloudPath=$cloudPath, mode=$uploadMode)"
 
 object NkConfig:
-  private val defaultExtensions = Set(
+  val defaultExtensions: Set[String] = Set(
     ".jpg", ".jpeg", ".png", ".mp4", ".mov", ".heic", ".heif",
     ".webp", ".gif", ".3gp", ".mkv", ".avi"
   )
 
   private val defaultDbPath: Path =
-    Path.of(System.getProperty("user.home"), ".local", "share", "nkupload", "state.db")
+    Path.of(System.getProperty("user.home"), ".local", "share", "ncimgupload", "state.db")
+
+  val defaultConfigPath: os.Path =
+    os.Path(System.getProperty("user.home")) / ".config" / "ncimgupload" / "config.conf"
+
+  def configExists: Boolean =
+    os.exists(defaultConfigPath) ||
+      sys.env.get("NKUPLOAD_CONFIG").exists(p => new File(p).exists()) ||
+      new File("ncimgupload.conf").exists()
+
+  def tryLoad(configPath: Option[String] = None): Option[NkConfig] =
+    Try(load(configPath)).toOption
 
   def load(configPath: Option[String]): NkConfig =
     val file = configPath
       .map(p => new File(p))
       .orElse(sys.env.get("NKUPLOAD_CONFIG").map(p => new File(p)))
-      .orElse(Option(new File(System.getProperty("user.home"), ".config/nkupload/config.conf")).filter(_.exists()))
-      .orElse(Option(new File("nkupload.conf")).filter(_.exists()))
+      .orElse(Option(new File(System.getProperty("user.home"), ".config/ncimgupload/config.conf")).filter(_.exists()))
+      .orElse(Option(new File("ncimgupload.conf")).filter(_.exists()))
       .getOrElse(throw new RuntimeException(
-        "No config file found. Create one at ~/.config/nkupload/config.conf or run 'nkupload setup'.\n" +
+        "No config file found. Create one at ~/.config/ncimgupload/config.conf or run 'ncimgupload setup'.\n" +
         "See config.example.conf for the format."
       ))
 
     checkPermissions(file.toPath)
     val raw = ConfigFactory.parseFile(file).resolve()
     parse(raw)
+
+  def fromValues(
+      nextcloudUrl: String,
+      username: String,
+      password: String,
+      phonePaths: Seq[String] = Seq("DCIM/Camera"),
+      cloudPath: String = "Photos/Phone",
+      adbPath: Option[String] = None
+  ): NkConfig =
+    NkConfig(
+      nextcloudUrl = nextcloudUrl.stripSuffix("/"),
+      username = username,
+      password = password,
+      phonePaths = phonePaths,
+      cloudPath = cloudPath,
+      syncFolder = None,
+      extensions = defaultExtensions,
+      chunkThreshold = 104857600L,
+      chunkSize = 10485760L,
+      retries = 3,
+      verifyChecksum = true,
+      uploadMode = "webdav",
+      cleanupDryRun = true,
+      cleanupVerifiedOnly = true,
+      adbPath = adbPath,
+      adbDevice = None,
+      dbPath = defaultDbPath
+    )
 
   private def checkPermissions(path: Path): Unit =
     Try {

@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.nio.file.{Files, Path}
 

@@ -1,6 +1,6 @@
 # Nextcloud API Reference
 
-API documentation relevant to nkupload, distilled from research and Nextcloud developer docs.
+API documentation relevant to ncimgupload, distilled from research and Nextcloud developer docs.
 
 ## Authentication
 

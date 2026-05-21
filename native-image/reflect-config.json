@@ -1,0 +1,54 @@
+[
+  {
+    "name": "org.sqlite.JDBC",
+    "methods": [
+      { "name": "<init>", "parameterTypes": [] }
+    ]
+  },
+  {
+    "name": "org.sqlite.core.NativeDB",
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "org.jline.terminal.impl.ExecTerminalProvider",
+    "methods": [
+      { "name": "<init>", "parameterTypes": [] }
+    ]
+  },
+  {
+    "name": "org.jline.terminal.impl.exec.ExecTerminalProvider",
+    "methods": [
+      { "name": "<init>", "parameterTypes": [] }
+    ]
+  },
+  {
+    "name": "com.typesafe.config.impl.ConfigImpl",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "com.typesafe.config.impl.ConfigImpl$LoaderCache",
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "requests.package$",
+    "allDeclaredFields": true
+  },
+  {
+    "name": "requests.Requester",
+    "allDeclaredFields": true
+  },
+  {
+    "name": "requests.Session",
+    "allDeclaredFields": true
+  },
+  {
+    "name": "requests.Util$",
+    "allDeclaredFields": true
+  },
+  {
+    "name": "requests.BaseSession",
+    "allDeclaredFields": true
+  }
+]

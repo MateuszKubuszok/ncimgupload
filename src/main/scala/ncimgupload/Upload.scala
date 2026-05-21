@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.time.Instant
 
@@ -10,7 +10,7 @@ class Upload(config: NkConfig, db: Db, adb: Adb, webdav: WebDav):
     val toUpload = limit.map(pending.take).getOrElse(pending)
 
     if toUpload.isEmpty then
-      Progress.info("No files to upload. Run 'nkupload scan' first to discover files.")
+      Progress.info("No files to upload. Run 'ncimgupload scan' first to discover files.")
       return
 
     val totalSize = toUpload.flatMap(_.phoneSize).sum

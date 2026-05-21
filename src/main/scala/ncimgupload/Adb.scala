@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import scala.util.{Try, Success, Failure}
 

@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 class SyncTest extends munit.FunSuite:
   private def phoneFile(name: String, size: Long, mtime: Long = 1000L) =
@@ -35,14 +35,24 @@ class SyncTest extends munit.FunSuite:
     assertEquals(result.missingFromPhone.head.filename, "IMG_003.jpg")
   }
 
-  test("size mismatch detected") {
+  test("stripped metadata detected when phone is larger") {
     val phone = Seq(phoneFile("IMG_001.jpg", 1024))
     val cloud = Seq(cloudFile("IMG_001.jpg", 1000))
     val result = Sync.diff(phone, cloud)
     assertEquals(result.matched.size, 0)
+    assertEquals(result.strippedMetadata.size, 1)
+    assertEquals(result.strippedMetadata.head._1.sizeBytes, 1024L)
+    assertEquals(result.strippedMetadata.head._2.sizeBytes, 1000L)
+  }
+
+  test("size mismatch when cloud is larger") {
+    val phone = Seq(phoneFile("IMG_001.jpg", 1000))
+    val cloud = Seq(cloudFile("IMG_001.jpg", 1024))
+    val result = Sync.diff(phone, cloud)
+    assertEquals(result.matched.size, 0)
     assertEquals(result.sizeMismatch.size, 1)
-    assertEquals(result.sizeMismatch.head._1.sizeBytes, 1024L)
-    assertEquals(result.sizeMismatch.head._2.sizeBytes, 1000L)
+    assertEquals(result.sizeMismatch.head._1.sizeBytes, 1000L)
+    assertEquals(result.sizeMismatch.head._2.sizeBytes, 1024L)
   }
 
   test("case-insensitive filename matching") {

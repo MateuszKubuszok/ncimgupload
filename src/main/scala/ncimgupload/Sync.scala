@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 object Sync:
   def diff(phoneFiles: Seq[FileEntry], cloudFiles: Seq[FileEntry]): DiffResult =
@@ -12,6 +12,7 @@ object Sync:
     val missingFromCloud = Seq.newBuilder[FileEntry]
     val matched = Seq.newBuilder[(FileEntry, FileEntry)]
     val sizeMismatch = Seq.newBuilder[(FileEntry, FileEntry)]
+    val strippedMetadata = Seq.newBuilder[(FileEntry, FileEntry)]
     val matchedCloudPaths = scala.collection.mutable.Set.empty[String]
 
     for phoneFile <- phoneFiles do
@@ -23,8 +24,12 @@ object Sync:
         case None =>
           cloudByName.get(phoneFile.filename.toLowerCase) match
             case Some(cloudMatches) =>
-              sizeMismatch += ((phoneFile, cloudMatches.head))
-              matchedCloudPaths += cloudMatches.head.relativePath
+              val cloudFile = cloudMatches.head
+              if phoneFile.sizeBytes > cloudFile.sizeBytes then
+                strippedMetadata += ((phoneFile, cloudFile))
+              else
+                sizeMismatch += ((phoneFile, cloudFile))
+              matchedCloudPaths += cloudFile.relativePath
             case None =>
               missingFromCloud += phoneFile
 
@@ -34,7 +39,8 @@ object Sync:
       missingFromCloud = missingFromCloud.result(),
       missingFromPhone = missingFromPhone,
       matched = matched.result(),
-      sizeMismatch = sizeMismatch.result()
+      sizeMismatch = sizeMismatch.result(),
+      strippedMetadata = strippedMetadata.result()
     )
 
   def printDiffSummary(result: DiffResult): Unit =
@@ -53,9 +59,20 @@ object Sync:
       if result.missingFromCloud.size > 5 then
         Progress.info(s"    ... and ${result.missingFromCloud.size - 5} more")
 
+    if result.strippedMetadata.nonEmpty then
+      Progress.info("")
+      Progress.info(s"=== Stripped metadata (phone has more data than cloud) ===")
+      Progress.info(s"  ${result.strippedMetadata.size} files — likely uploaded without EXIF/GPS data")
+      result.strippedMetadata.take(10).foreach { case (phone, cloud) =>
+        val diff = phone.sizeBytes - cloud.sizeBytes
+        Progress.info(s"    ${phone.filename}  phone: ${Progress.formatSize(phone.sizeBytes)}  cloud: ${Progress.formatSize(cloud.sizeBytes)}  (+${Progress.formatSize(diff)} missing)")
+      }
+      if result.strippedMetadata.size > 10 then
+        Progress.info(s"    ... and ${result.strippedMetadata.size - 10} more")
+
     if result.sizeMismatch.nonEmpty then
       Progress.info("")
-      Progress.info(s"=== Size mismatch (possible corruption) ===")
+      Progress.info(s"=== Size mismatch (cloud larger than phone) ===")
       Progress.info(s"  ${result.sizeMismatch.size} files")
       result.sizeMismatch.take(10).foreach { case (phone, cloud) =>
         val diff = math.abs(phone.sizeBytes - cloud.sizeBytes)

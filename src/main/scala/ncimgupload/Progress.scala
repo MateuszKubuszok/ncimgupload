@@ -1,9 +1,10 @@
-package nkupload
+package ncimgupload
 
 import java.io.PrintStream
 
 object Progress:
   private val isTerminal = System.console() != null
+  var tuiMode: Boolean = false
 
   def formatSize(bytes: Long): String =
     if bytes < 1024 then s"${bytes} B"
@@ -46,7 +47,7 @@ object Progress:
       out.print(s"\r[$bar] $pct% ${formatSize(bytesSent)}/${formatSize(totalBytes)}  $speedStr  ETA ${formatDuration(eta)}  $filename")
       if bytesSent >= totalBytes then out.println()
 
-  def info(msg: String): Unit = println(msg)
-  def warn(msg: String): Unit = System.err.println(s"WARNING: $msg")
-  def error(msg: String): Unit = System.err.println(s"ERROR: $msg")
-  def verbose(msg: String, isVerbose: Boolean): Unit = if isVerbose then System.err.println(s"  [debug] $msg")
+  def info(msg: String): Unit = if !tuiMode then println(msg)
+  def warn(msg: String): Unit = if !tuiMode then System.err.println(s"WARNING: $msg")
+  def error(msg: String): Unit = if !tuiMode then System.err.println(s"ERROR: $msg")
+  def verbose(msg: String, isVerbose: Boolean): Unit = if isVerbose && !tuiMode then System.err.println(s"  [debug] $msg")

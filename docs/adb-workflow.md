@@ -1,6 +1,6 @@
 # ADB Workflow
 
-How nkupload interacts with Android phones via ADB (Android Debug Bridge).
+How ncimgupload interacts with Android phones via ADB (Android Debug Bridge).
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ Android stores camera media under `/storage/emulated/0/`:
 
 The exact structure varies by device and installed apps. The `DCIM/Camera/` directory is the most common location for photos taken by the built-in camera app.
 
-nkupload scans the paths configured in `paths.phone` (default: `["DCIM/Camera"]`).
+ncimgupload scans the paths configured in `paths.phone` (default: `["DCIM/Camera"]`).
 
 ## ADB Commands Used
 
@@ -70,7 +70,7 @@ This combines `find` (file discovery with extension filter) and `stat` (metadata
 ### File Transfer (Pull)
 
 ```bash
-adb pull /storage/emulated/0/DCIM/Camera/IMG_20240520_091523.jpg /tmp/nkupload/
+adb pull /storage/emulated/0/DCIM/Camera/IMG_20240520_091523.jpg /tmp/ncimgupload/
 ```
 
 Transfers the file from phone to local disk. Used before upload to:

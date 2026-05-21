@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.util.{Base64, UUID}
 import scala.util.Try
@@ -60,7 +60,10 @@ class WebDav(config: NkConfig):
     parsePropfindResponse(resp.text(), path, verbose)
 
   def scanCloud(verbose: Boolean = false): Seq[FileEntry] =
-    val cloudPath = config.cloudPath.stripPrefix("/").stripSuffix("/")
+    scanCloudPath("", verbose)
+
+  def scanCloudPath(path: String, verbose: Boolean = false): Seq[FileEntry] =
+    val cloudPath = path.stripPrefix("/").stripSuffix("/")
     val allInfos = propfind(cloudPath, depth = -1, verbose = verbose)
 
     allInfos.collect {
@@ -186,6 +189,30 @@ class WebDav(config: NkConfig):
   def getChecksum(path: String): Option[String] =
     val infos = propfind(path, depth = 0)
     infos.headOption.flatMap(_.checksum)
+
+  def mkdir(path: String): Boolean =
+    val url = s"${config.baseWebDavUrl}/${path.stripPrefix("/")}"
+    try
+      val resp = mkcolVerb(
+        url,
+        headers = baseHeaders,
+        readTimeout = 15000,
+        connectTimeout = 10000,
+        check = false
+      )
+      resp.statusCode == 201
+    catch
+      case e: Exception =>
+        Progress.error(s"MKCOL failed: ${e.getMessage}")
+        false
+
+  def listFolders(path: String, verbose: Boolean = false): Seq[String] =
+    val normalizedPath = path.stripPrefix("/").stripSuffix("/")
+    val infos = propfind(normalizedPath, depth = 1, verbose = verbose)
+    infos
+      .filter(_.isCollection)
+      .map(_.relativePath)
+      .filterNot(rp => rp == normalizedPath || rp.isEmpty)
 
   private def propfindBody(props: Seq[String]): String =
     val propElements = props.map { p =>

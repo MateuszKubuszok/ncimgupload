@@ -1,4 +1,4 @@
-package nkupload
+package ncimgupload
 
 import java.io.{BufferedInputStream, FileInputStream}
 import java.security.MessageDigest
