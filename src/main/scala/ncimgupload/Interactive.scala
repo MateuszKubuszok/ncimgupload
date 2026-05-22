@@ -362,10 +362,10 @@ class Interactive(configPath: Option[String]):
     val cloudEntries = if memories.isAvailable then
       usedMemories = true
       tui.successMessage("Memories app detected — using fast index scan")
-      tui.waitMessage("Scanning via Memories API...")
+      tui.waitMessage("Fetching day index...")
       val entries = memories.scanAll(
         onProgress = (current, total) =>
-          tui.print(s"\r${tui.ClearLine}  ${tui.Dim}Scanning day $current/$total ...${tui.Reset}")
+          tui.print(s"\r${tui.ClearLine}  ${tui.Dim}Fetching changed day $current/$total ...${tui.Reset}")
       )
       tui.print(s"\r${tui.ClearLine}")
       entries

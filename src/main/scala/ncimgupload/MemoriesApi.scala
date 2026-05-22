@@ -11,7 +11,7 @@ class MemoriesApi(config: NkConfig):
     "Accept" -> "application/json"
   )
   private val baseUrl = config.nextcloudUrl.stripSuffix("/")
-  private val cacheDir = os.Path(config.dbPath.getParent) / "memories-cache"
+  private val cacheFile = os.Path(config.dbPath.getParent) / "memories-cache.json"
 
   def isAvailable: Boolean =
     try
@@ -27,47 +27,48 @@ class MemoriesApi(config: NkConfig):
       case _: Exception => false
 
   def scanAll(onProgress: (Int, Int) => Unit = (_, _) => ()): Seq[FileEntry] =
-    os.makeDir.all(cacheDir)
     val days = fetchDays()
     if days.isEmpty then return Seq.empty
 
-    val cachedDays = loadCachedDayCounts()
-    val result = Seq.newBuilder[FileEntry]
-    var fetched = 0
-    var cached = 0
+    val cache = loadCache()
+    val changedDays = days.filter { day =>
+      cache.get(day.dayId) match
+        case Some(cached) => cached.count != day.count
+        case None => true
+    }
 
-    for (day, idx) <- days.zipWithIndex do
-      onProgress(idx + 1, days.size)
+    val updatedCache = if changedDays.isEmpty then
+      onProgress(days.size, days.size)
+      cache
+    else
+      val newEntries = scala.collection.mutable.Map.from(cache)
+      for (day, idx) <- changedDays.zipWithIndex do
+        onProgress(idx + 1, changedDays.size)
+        val photos = fetchDay(day.dayId)
+        newEntries(day.dayId) = CachedDay(day.count, photos)
+      // remove days no longer on server
+      val serverDayIds = days.map(_.dayId).toSet
+      newEntries.filterInPlace((k, _) => serverDayIds.contains(k))
+      val result = newEntries.toMap
+      saveCache(result)
+      result
 
-      val cachedPhotos = cachedDays.get(day.dayId) match
-        case Some(cachedCount) if cachedCount == day.count =>
-          loadCachedDay(day.dayId)
-        case _ => None
+    val allPhotos = Seq.newBuilder[FileEntry]
+    for day <- days do
+      updatedCache.get(day.dayId).foreach { cached =>
+        for photo <- cached.photos do
+          if config.extensions.exists(ext => photo.basename.toLowerCase.endsWith(ext)) then
+            allPhotos += FileEntry(
+              relativePath = photo.basename,
+              filename = photo.basename,
+              sizeBytes = photo.size,
+              mtimeEpoch = photo.epoch,
+              checksum = None,
+              source = "cloud"
+            )
+      }
 
-      val photos = cachedPhotos match
-        case Some(entries) =>
-          cached += 1
-          entries
-        case None =>
-          fetched += 1
-          val entries = fetchDay(day.dayId)
-          saveCachedDay(day.dayId, entries)
-          entries
-
-      for photo <- photos do
-        if config.extensions.exists(ext => photo.basename.toLowerCase.endsWith(ext)) then
-          result += FileEntry(
-            relativePath = photo.basename,
-            filename = photo.basename,
-            sizeBytes = photo.size,
-            mtimeEpoch = photo.epoch,
-            checksum = None,
-            source = "cloud"
-          )
-
-    saveCachedDayCounts(days)
-    Progress.verbose(s"Memories scan: $fetched days fetched, $cached days from cache", true)
-    result.result()
+    allPhotos.result()
 
   private def fetchDays(): Seq[DaySummary] =
     try
@@ -132,46 +133,42 @@ class MemoriesApi(config: NkConfig):
       }.toOption.filter(_ > 0)
     }.headOption.getOrElse(0L)
 
-  // --- Caching ---
+  // --- Single-file cache ---
 
-  private def loadCachedDayCounts(): Map[Long, Int] =
-    val file = cacheDir / "days.json"
-    if !os.exists(file) then return Map.empty
+  private case class CachedDay(count: Int, photos: Seq[MemoriesPhoto])
+
+  private def loadCache(): Map[Long, CachedDay] =
+    if !os.exists(cacheFile) then return Map.empty
     try
-      val json = ujson.read(os.read(file))
-      json.arr.flatMap { entry =>
-        for
-          dayId <- Try(entry("dayid").num.toLong).toOption
-          count <- Try(entry("count").num.toInt).toOption
-        yield dayId -> count
+      val json = ujson.read(os.read(cacheFile))
+      json.obj.flatMap { case (dayIdStr, dayObj) =>
+        for dayId <- Try(dayIdStr.toLong).toOption yield
+          val count = Try(dayObj("count").num.toInt).getOrElse(0)
+          val photos = Try {
+            dayObj("photos").arr.map { p =>
+              MemoriesPhoto(
+                p("basename").str,
+                Try(p("size").num.toLong).getOrElse(0L),
+                Try(p("epoch").num.toLong).getOrElse(0L)
+              )
+            }.toSeq
+          }.getOrElse(Seq.empty)
+          dayId -> CachedDay(count, photos)
       }.toMap
     catch
       case _: Exception => Map.empty
 
-  private def saveCachedDayCounts(days: Seq[DaySummary]): Unit =
-    val json = ujson.Arr(days.map(d => ujson.Obj("dayid" -> d.dayId, "count" -> d.count))*)
-    os.write.over(cacheDir / "days.json", ujson.write(json))
-
-  private def loadCachedDay(dayId: Long): Option[Seq[MemoriesPhoto]] =
-    val file = cacheDir / s"day-$dayId.json"
-    if !os.exists(file) then return None
-    try
-      val json = ujson.read(os.read(file))
-      Some(json.arr.map { entry =>
-        MemoriesPhoto(
-          entry("basename").str,
-          Try(entry("size").num.toLong).getOrElse(0L),
-          Try(entry("epoch").num.toLong).getOrElse(dayId * 86400)
-        )
-      }.toSeq)
-    catch
-      case _: Exception => None
-
-  private def saveCachedDay(dayId: Long, photos: Seq[MemoriesPhoto]): Unit =
-    val json = ujson.Arr(photos.map(p =>
-      ujson.Obj("basename" -> p.basename, "size" -> p.size, "epoch" -> p.epoch)
-    )*)
-    os.write.over(cacheDir / s"day-$dayId.json", ujson.write(json))
+  private def saveCache(cache: Map[Long, CachedDay]): Unit =
+    val json = ujson.Obj()
+    for (dayId, cached) <- cache do
+      json(dayId.toString) = ujson.Obj(
+        "count" -> cached.count,
+        "photos" -> ujson.Arr(cached.photos.map(p =>
+          ujson.Obj("basename" -> p.basename, "size" -> p.size, "epoch" -> p.epoch)
+        )*)
+      )
+    os.makeDir.all(cacheFile / os.up)
+    os.write.over(cacheFile, ujson.write(json))
 
 private case class DaySummary(dayId: Long, count: Int)
 private case class MemoriesPhoto(basename: String, size: Long, epoch: Long)
