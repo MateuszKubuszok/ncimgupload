@@ -16,6 +16,9 @@ class WebDav(config: NkConfig):
   private val mkcolVerb = new requests.Requester("MKCOL", session)
   private val moveVerb = new requests.Requester("MOVE", session)
 
+  private def encodePath(path: String): String =
+    path.stripPrefix("/").split('/').map(java.net.URLEncoder.encode(_, "UTF-8").replace("+", "%20")).mkString("/")
+
   def testConnection(): Boolean =
     try
       val url = s"${config.baseWebDavUrl}/"
@@ -34,7 +37,7 @@ class WebDav(config: NkConfig):
         false
 
   def propfind(path: String, depth: Int = 1, verbose: Boolean = false): Seq[CloudFileInfo] =
-    val url = s"${config.baseWebDavUrl}/${path.stripPrefix("/")}"
+    val url = s"${config.baseWebDavUrl}/${encodePath(path)}"
     Progress.verbose(s"PROPFIND $url (depth=$depth)", verbose)
 
     val depthStr = if depth < 0 then "infinity" else depth.toString
@@ -99,7 +102,7 @@ class WebDav(config: NkConfig):
     }
 
   def putStream(localPath: os.Path, remotePath: String, checksum: Option[String] = None, mtime: Option[Long] = None): Boolean =
-    val url = s"${config.baseWebDavUrl}/${remotePath.stripPrefix("/")}"
+    val url = s"${config.baseWebDavUrl}/${encodePath(remotePath)}"
     val fileData = os.read.bytes(localPath)
     val headers = baseHeaders ++ Map(
       "Content-Type" -> "application/octet-stream",
@@ -128,7 +131,7 @@ class WebDav(config: NkConfig):
 
     Progress.verbose(s"Starting chunked upload: $totalChunks chunks of ${Progress.formatSize(chunkSize)}", verbose)
 
-    val destUrl = s"${config.baseWebDavUrl}/${remotePath.stripPrefix("/")}"
+    val destUrl = s"${config.baseWebDavUrl}/${encodePath(remotePath)}"
 
     val mkcolResp = mkcolVerb(
       s"${config.uploadsWebDavUrl}/$uploadId",
@@ -200,7 +203,7 @@ class WebDav(config: NkConfig):
       false
 
   def exists(path: String): Boolean =
-    val url = s"${config.baseWebDavUrl}/${path.stripPrefix("/")}"
+    val url = s"${config.baseWebDavUrl}/${encodePath(path)}"
     val resp = requests.head(url, headers = baseHeaders, check = false, readTimeout = 15000)
     resp.statusCode == 200
 
@@ -209,7 +212,7 @@ class WebDav(config: NkConfig):
     infos.headOption.flatMap(_.checksum)
 
   def mkdir(path: String): Boolean =
-    val url = s"${config.baseWebDavUrl}/${path.stripPrefix("/")}"
+    val url = s"${config.baseWebDavUrl}/${encodePath(path)}"
     try
       val resp = mkcolVerb(
         url,
