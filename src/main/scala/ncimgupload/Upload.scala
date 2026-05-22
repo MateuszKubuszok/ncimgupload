@@ -17,6 +17,27 @@ class Upload(config: NkConfig, db: Db, adb: Adb, webdav: WebDav):
     Progress.info(s"${toUpload.size} files to upload (${Progress.formatSize(totalSize)})")
     Progress.info("")
 
+    uploadRecords(toUpload, verbose)
+
+  def uploadFiles(files: Seq[FileEntry], verbose: Boolean): Unit =
+    if files.isEmpty then return
+
+    val totalSize = files.map(_.sizeBytes).sum
+    Progress.info(s"${files.size} files to upload (${Progress.formatSize(totalSize)})")
+    Progress.info("")
+
+    val records = files.map { f =>
+      SyncRecord(
+        id = 0, relativePath = f.relativePath, filename = f.filename,
+        phoneSize = Some(f.sizeBytes), phoneMtime = Some(f.mtimeEpoch),
+        cloudSize = None, cloudEtag = None, cloudFileId = None, cloudChecksum = None,
+        uploadStatus = SyncRecord.StatusPending, verifiedAt = None, lastError = None,
+        scanPhoneAt = None, scanCloudAt = None
+      )
+    }
+    uploadRecords(records, verbose)
+
+  private def uploadRecords(toUpload: Seq[SyncRecord], verbose: Boolean): Unit =
     os.makeDir.all(tmpDir)
     var uploaded = 0
     var failed = 0
@@ -57,15 +78,15 @@ class Upload(config: NkConfig, db: Db, adb: Adb, webdav: WebDav):
 
     config.uploadMode match
       case "sync-folder" => uploadViaSyncFolder(record, localTmp, cloudDest, checksum, verbose)
-      case _ => uploadViaWebDav(record, localTmp, cloudDest, checksum, fileSize, verbose)
+      case _ => uploadViaWebDav(record, localTmp, cloudDest, checksum, fileSize, record.phoneMtime, verbose)
 
-  private def uploadViaWebDav(record: SyncRecord, localTmp: os.Path, cloudDest: String, checksum: String, fileSize: Long, verbose: Boolean): Boolean =
+  private def uploadViaWebDav(record: SyncRecord, localTmp: os.Path, cloudDest: String, checksum: String, fileSize: Long, mtime: Option[Long], verbose: Boolean): Boolean =
     val success = if fileSize >= config.chunkThreshold then
       Progress.info(s"  Uploading (chunked, ${((fileSize + config.chunkSize - 1) / config.chunkSize).toInt} chunks)...")
-      webdav.chunkedUpload(localTmp, cloudDest, Some(checksum), verbose)
+      webdav.chunkedUpload(localTmp, cloudDest, Some(checksum), verbose, mtime)
     else
       Progress.info(s"  Uploading to $cloudDest...")
-      webdav.putStream(localTmp, cloudDest, Some(checksum))
+      webdav.putStream(localTmp, cloudDest, Some(checksum), mtime)
 
     if !success then
       db.updateStatus(record.relativePath, SyncRecord.StatusFailed, Some("Upload failed"))

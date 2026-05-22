@@ -136,25 +136,42 @@ object Main:
     Progress.info(s"  $videos videos (${Progress.formatSize(entries.filter(e => isVideo(e.filename)).map(_.sizeBytes).sum)})")
     Progress.info("Scan saved to database.")
 
-  @main(doc = "Scan Nextcloud for photos/videos via WebDAV")
+  @main(doc = "Scan Nextcloud for photos/videos")
   def `scan-cloud`(
       @arg(doc = "Config file path") config: Option[String] = None,
       @arg(short = 'v', doc = "Verbose output") verbose: Flag = Flag(false),
-      @arg(doc = "Scan entire Nextcloud, not just cloud path") all: Flag = Flag(false)
+      @arg(doc = "Scan entire Nextcloud, not just cloud path") all: Flag = Flag(false),
+      @arg(doc = "Use Memories API for fast scanning") memories: Flag = Flag(false)
   ): Unit =
     val cfg = NkConfig.load(config)
     this.verbose = verbose.value
     val db = new Db(cfg.dbPath)
     db.init()
-    val webdav = new WebDav(cfg)
 
-    val scanPath = if all.value then "" else cfg.cloudPath
-    val scanLabel = if all.value then "all files" else s"/${cfg.cloudPath}/"
-    Progress.info(s"Scanning ${cfg.nextcloudUrl} ($scanLabel) via WebDAV...")
     val now = Instant.now().getEpochSecond
-    val scanId = db.recordScanStart("cloud", if all.value then "/" else cfg.cloudPath, now)
+    val scanId = db.recordScanStart("cloud", if all.value || memories.value then "/" else cfg.cloudPath, now)
 
-    val cloudFiles = webdav.scanCloudPath(scanPath, verbose.value)
+    val cloudFiles = if memories.value then
+      val api = new MemoriesApi(cfg)
+      if api.isAvailable then
+        Progress.info(s"Scanning ${cfg.nextcloudUrl} via Memories API...")
+        api.scanAll(
+          onProgress = (current, total) => Progress.info(s"  Scanning day $current/$total ...")
+        )
+      else
+        Progress.error("Memories app not available. Use --all for WebDAV scan instead.")
+        sys.exit(1)
+    else if all.value then
+      val webdav = new WebDav(cfg)
+      Progress.info(s"Scanning ${cfg.nextcloudUrl} (all files) via WebDAV...")
+      webdav.scanCloudAll(
+        onFolder = folder => Progress.info(s"  Scanning /$folder/ ..."),
+        verbose = verbose.value
+      )
+    else
+      val webdav = new WebDav(cfg)
+      Progress.info(s"Scanning ${cfg.nextcloudUrl} (/${cfg.cloudPath}/) via WebDAV...")
+      webdav.scanCloudPath(cfg.cloudPath, verbose.value)
 
     for entry <- cloudFiles do
       db.upsertCloudFile(entry, None, None, entry.checksum, now)

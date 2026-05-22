@@ -65,8 +65,26 @@ class WebDav(config: NkConfig):
   def scanCloudPath(path: String, verbose: Boolean = false): Seq[FileEntry] =
     val cloudPath = path.stripPrefix("/").stripSuffix("/")
     val allInfos = propfind(cloudPath, depth = -1, verbose = verbose)
+    filterMediaFiles(allInfos)
 
-    allInfos.collect {
+  def scanCloudAll(onFolder: String => Unit = _ => (), verbose: Boolean = false): Seq[FileEntry] =
+    val topLevel = propfind("", depth = 1, verbose = verbose)
+    val folders = topLevel.filter(_.isCollection).map(_.relativePath).filterNot(_.isEmpty)
+    val result = Seq.newBuilder[FileEntry]
+
+    for folder <- folders do
+      onFolder(folder)
+      try
+        val infos = propfind(folder, depth = -1, verbose = verbose)
+        result ++= filterMediaFiles(infos)
+      catch
+        case e: Exception =>
+          Progress.warn(s"Failed to scan /$folder/: ${e.getMessage}")
+
+    result.result()
+
+  private def filterMediaFiles(infos: Seq[CloudFileInfo]): Seq[FileEntry] =
+    infos.collect {
       case info if !info.isCollection && config.extensions.exists(ext =>
         info.filename.toLowerCase.endsWith(ext)
       ) =>
@@ -80,13 +98,13 @@ class WebDav(config: NkConfig):
         )
     }
 
-  def putStream(localPath: os.Path, remotePath: String, checksum: Option[String] = None): Boolean =
+  def putStream(localPath: os.Path, remotePath: String, checksum: Option[String] = None, mtime: Option[Long] = None): Boolean =
     val url = s"${config.baseWebDavUrl}/${remotePath.stripPrefix("/")}"
     val fileData = os.read.bytes(localPath)
     val headers = baseHeaders ++ Map(
       "Content-Type" -> "application/octet-stream",
       "X-NC-WebDAV-AutoMkcol" -> "1"
-    ) ++ checksum.map(c => "OC-Checksum" -> c)
+    ) ++ checksum.map(c => "OC-Checksum" -> c) ++ mtime.map(t => "X-OC-Mtime" -> t.toString)
 
     val resp = requests.put(
       url,
@@ -102,7 +120,7 @@ class WebDav(config: NkConfig):
       Progress.error(s"PUT failed with status ${resp.statusCode}: ${resp.text().take(200)}")
       false
 
-  def chunkedUpload(localPath: os.Path, remotePath: String, checksum: Option[String] = None, verbose: Boolean = false): Boolean =
+  def chunkedUpload(localPath: os.Path, remotePath: String, checksum: Option[String] = None, verbose: Boolean = false, mtime: Option[Long] = None): Boolean =
     val uploadId = UUID.randomUUID().toString
     val fileSize = os.size(localPath)
     val chunkSize = config.chunkSize
@@ -165,7 +183,7 @@ class WebDav(config: NkConfig):
       "Destination" -> destUrl,
       "OC-Total-Length" -> fileSize.toString,
       "Overwrite" -> "T"
-    ) ++ checksum.map(c => "OC-Checksum" -> c)
+    ) ++ checksum.map(c => "OC-Checksum" -> c) ++ mtime.map(t => "X-OC-Mtime" -> t.toString)
 
     val moveResp = moveVerb(
       s"${config.uploadsWebDavUrl}/$uploadId/.file",

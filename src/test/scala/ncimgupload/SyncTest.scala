@@ -71,6 +71,15 @@ class SyncTest extends munit.FunSuite:
     assertEquals(result.missingFromCloud.size, 0)
   }
 
+  test("cloud size 0 matches by filename only (Memories API)") {
+    val phone = Seq(phoneFile("IMG_001.jpg", 4096))
+    val cloud = Seq(cloudFile("IMG_001.jpg", 0))
+    val result = Sync.diff(phone, cloud)
+    assertEquals(result.matched.size, 1)
+    assertEquals(result.missingFromCloud.size, 0)
+    assertEquals(result.strippedMetadata.size, 0)
+  }
+
   test("empty lists") {
     val result = Sync.diff(Seq.empty, Seq.empty)
     assertEquals(result.matched.size, 0)

@@ -25,7 +25,10 @@ object Sync:
           cloudByName.get(phoneFile.filename.toLowerCase) match
             case Some(cloudMatches) =>
               val cloudFile = cloudMatches.head
-              if phoneFile.sizeBytes > cloudFile.sizeBytes then
+              if cloudFile.sizeBytes == 0L then
+                // Size unknown (e.g., Memories API) — match by filename, count as backed up
+                matched += ((phoneFile, cloudFile))
+              else if phoneFile.sizeBytes > cloudFile.sizeBytes then
                 strippedMetadata += ((phoneFile, cloudFile))
               else
                 sizeMismatch += ((phoneFile, cloudFile))

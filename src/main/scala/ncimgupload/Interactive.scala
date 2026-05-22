@@ -16,6 +16,12 @@ class Interactive(configPath: Option[String]):
           mainMenu()
         case None =>
           firstRunWizard()
+    catch
+      case _: org.jline.reader.UserInterruptException =>
+        tui.println()
+        tui.println("Interrupted.")
+      case _: org.jline.reader.EndOfFileException =>
+        tui.println()
     finally
       Progress.tuiMode = false
       tui.close()
@@ -255,41 +261,45 @@ class Interactive(configPath: Option[String]):
   private def mainMenu(): Unit =
     var running = true
     while running do
-      tui.clearScreen()
-      val db = new Db(config.dbPath)
-      db.init()
-      val lastScan = db.getLastScan("phone")
-      val lastScanStr = lastScan.map { epoch =>
-        val seconds = Instant.now().getEpochSecond - epoch
-        s"Last sync: ${Progress.formatDuration(seconds)} ago"
-      }.getOrElse("No scans yet")
+      try
+        tui.clearScreen()
+        val db = new Db(config.dbPath)
+        db.init()
+        val lastScan = db.getLastScan("phone")
+        val lastScanStr = lastScan.map { epoch =>
+          val seconds = Instant.now().getEpochSecond - epoch
+          s"Last sync: ${Progress.formatDuration(seconds)} ago"
+        }.getOrElse("No scans yet")
 
-      tui.println(tui.box("ncimgupload", Seq(
-        s"  ${config.nextcloudUrl} · ${tui.Dim}$lastScanStr${tui.Reset}",
-      )))
-      tui.println()
+        tui.println(tui.box("ncimgupload", Seq(
+          s"  ${config.nextcloudUrl} · ${tui.Dim}$lastScanStr${tui.Reset}",
+        )))
+        tui.println()
 
-      val choice = tui.selectMenu(
-        "What would you like to do?",
-        Seq(
-          "Scan & Upload",
-          "View Status",
-          "Settings",
-          "Exit"
-        ),
-        Seq(
-          "Scan phone and cloud, then upload missing files",
-          "Show backup status and file counts",
-          "View or change configuration",
-          "Quit ncimgupload"
+        val choice = tui.selectMenu(
+          "What would you like to do?",
+          Seq(
+            "Scan & Upload",
+            "View Status",
+            "Settings",
+            "Exit"
+          ),
+          Seq(
+            "Scan phone and cloud, then upload missing files",
+            "Show backup status and file counts",
+            "View or change configuration",
+            "Quit ncimgupload"
+          )
         )
-      )
 
-      choice match
-        case 0 => scanAndUpload()
-        case 1 => viewStatus()
-        case 2 => settingsMenu()
-        case _ => running = false
+        choice match
+          case 0 => scanAndUpload()
+          case 1 => viewStatus()
+          case 2 => settingsMenu()
+          case _ => running = false
+      catch
+        case _: org.jline.reader.UserInterruptException => running = false
+        case _: org.jline.reader.EndOfFileException => running = false
 
   private def scanAndUpload(): Unit =
     val db = new Db(config.dbPath)
@@ -324,11 +334,33 @@ class Interactive(configPath: Option[String]):
     db.recordScanFinish(phoneScanId, phoneFiles.size, Instant.now().getEpochSecond)
     tui.successMessage(s"Found ${phoneFiles.size} files on phone (${Progress.formatSize(phoneFiles.map(_.sizeBytes).sum)})")
 
-    // Scan entire Nextcloud (not just upload folder) to find files wherever they were moved
-    tui.waitMessage("Scanning all files on Nextcloud (files may have been moved/organized)...")
+    // Scan Nextcloud: try Memories API first (fast), fall back to PROPFIND (slow)
     val cloudNow = Instant.now().getEpochSecond
     val cloudScanId = db.recordScanStart("cloud", "/", cloudNow)
-    val cloudEntries = webdav.scanCloudPath("", false)
+
+    val memories = new MemoriesApi(config)
+    tui.waitMessage("Checking for Memories app on Nextcloud...")
+    var usedMemories = false
+    val cloudEntries = if memories.isAvailable then
+      usedMemories = true
+      tui.successMessage("Memories app detected — using fast index scan")
+      tui.waitMessage("Scanning via Memories API...")
+      val entries = memories.scanAll(
+        onProgress = (current, total) =>
+          tui.print(s"\r${tui.ClearLine}  ${tui.Dim}Scanning day $current/$total ...${tui.Reset}")
+      )
+      tui.print(s"\r${tui.ClearLine}")
+      entries
+    else
+      tui.warnMessage("Memories app not found — falling back to WebDAV folder scan (slower)")
+      tui.waitMessage("Scanning all folders on Nextcloud...")
+      val entries = webdav.scanCloudAll(
+        onFolder = folder => tui.print(s"\r${tui.ClearLine}  ${tui.Dim}Scanning /$folder/ ...${tui.Reset}"),
+        verbose = false
+      )
+      tui.print(s"\r${tui.ClearLine}")
+      entries
+
     for entry <- cloudEntries do
       db.upsertCloudFile(entry, None, None, entry.checksum, cloudNow)
       db.markCloudFileByFilenameSize(entry.filename, entry.sizeBytes, None, None, entry.checksum, cloudNow)
@@ -348,6 +380,11 @@ class Interactive(configPath: Option[String]):
       statusLines += "Size mismatch" -> s"${result.sizeMismatch.size} files"
     tui.showStatus(statusLines.result())
 
+    if usedMemories && result.strippedMetadata.isEmpty then
+      tui.println()
+      tui.infoMessage("Note: Metadata repair detection requires a full WebDAV scan (file sizes needed).")
+      tui.infoMessage("Run with --all flag in CLI mode to detect stripped metadata.")
+
     if result.missingFromCloud.isEmpty && result.strippedMetadata.isEmpty then
       tui.println()
       tui.successMessage("All files are backed up! Nothing to upload.")
@@ -360,7 +397,7 @@ class Interactive(configPath: Option[String]):
         tui.println()
         Progress.tuiMode = false
         val uploader = new Upload(config, db, adb, webdav)
-        uploader.uploadMissing(None, false)
+        uploader.uploadFiles(result.missingFromCloud, false)
         Progress.tuiMode = true
         tui.println()
         tui.successMessage("Upload complete!")
@@ -369,6 +406,7 @@ class Interactive(configPath: Option[String]):
       tui.println()
       tui.warnMessage(s"${result.strippedMetadata.size} files appear to have been uploaded without full metadata (e.g., GPS location).")
       tui.infoMessage("The phone version is larger — likely the cloud copy was stripped by Android permissions.")
+      tui.infoMessage("Re-uploading will OVERWRITE the cloud copy at its current location.")
       tui.println()
       if tui.confirm("View these files?", default = true) then
         repairStrippedFiles(result.strippedMetadata, adb, webdav)
@@ -383,6 +421,7 @@ class Interactive(configPath: Option[String]):
     tui.println()
     tui.println(tui.header("Files with stripped metadata"))
     tui.println()
+    val totalDiff = files.map { case (p, c) => p.sizeBytes - c.sizeBytes }.sum
     for (phone, cloud) <- files.take(20) do
       val diff = phone.sizeBytes - cloud.sizeBytes
       tui.println(s"  ${phone.filename}")
@@ -390,12 +429,45 @@ class Interactive(configPath: Option[String]):
       tui.println(s"    ${tui.Dim}cloud location: /${cloud.relativePath}${tui.Reset}")
     if files.size > 20 then
       tui.println(s"  ${tui.Dim}... and ${files.size - 20} more${tui.Reset}")
+    tui.println()
+    tui.infoMessage(s"Total missing data: ${Progress.formatSize(totalDiff)} across ${files.size} files")
 
     tui.println()
-    tui.warnMessage("Re-uploading will OVERWRITE the cloud copies with the full phone versions.")
-    tui.infoMessage("Each file will be uploaded to its current cloud location.")
+    val choice = tui.selectMenu(
+      "What would you like to do?",
+      Seq(
+        "Dry run (show what would be re-uploaded, no changes)",
+        "Re-upload all (overwrite cloud copies with full phone versions)",
+        "Back"
+      )
+    )
+
+    choice match
+      case 0 => dryRunRepair(files)
+      case 1 => executeRepair(files, adb, webdav)
+      case _ => ()
+
+  private def dryRunRepair(files: Seq[(FileEntry, FileEntry)]): Unit =
     tui.println()
-    if !tui.confirm(s"Re-upload all ${files.size} files with full metadata?", default = false) then
+    tui.println(tui.header("Dry Run — No changes will be made"))
+    tui.println()
+    for ((phone, cloud), idx) <- files.zipWithIndex do
+      val diff = phone.sizeBytes - cloud.sizeBytes
+      tui.println(s"  [${idx + 1}/${files.size}] ${phone.filename}")
+      tui.println(s"    ${tui.Dim}Would pull from phone: ${phone.relativePath} (${Progress.formatSize(phone.sizeBytes)})${tui.Reset}")
+      tui.println(s"    ${tui.Dim}Would overwrite cloud: /${cloud.relativePath} (${Progress.formatSize(cloud.sizeBytes)} → ${Progress.formatSize(phone.sizeBytes)})${tui.Reset}")
+    tui.println()
+    tui.successMessage(s"Dry run complete. ${files.size} files would be re-uploaded.")
+    tui.infoMessage("Run again and choose 'Re-upload all' to apply changes.")
+
+  private def executeRepair(
+      files: Seq[(FileEntry, FileEntry)],
+      adb: Adb,
+      webdav: WebDav
+  ): Unit =
+    tui.println()
+    tui.warnMessage("This will OVERWRITE cloud copies with the full phone versions.")
+    if !tui.confirm(s"Confirm re-upload of ${files.size} files?", default = false) then
       return
 
     tui.println()
@@ -410,10 +482,11 @@ class Interactive(configPath: Option[String]):
       try
         if adb.pullFile(phone.relativePath, localTmp) then
           val checksum = Checksums.computeFile(localTmp)
+          val mtime = Some(phone.mtimeEpoch)
           val success = if os.size(localTmp) >= config.chunkThreshold then
-            webdav.chunkedUpload(localTmp, cloud.relativePath, Some(checksum))
+            webdav.chunkedUpload(localTmp, cloud.relativePath, Some(checksum), mtime = mtime)
           else
-            webdav.putStream(localTmp, cloud.relativePath, Some(checksum))
+            webdav.putStream(localTmp, cloud.relativePath, Some(checksum), mtime = mtime)
           if success then repaired += 1
           else failed += 1
         else
