@@ -7,10 +7,22 @@ object Main:
   private var verbose = false
 
   def main(args: Array[String]): Unit =
-    if args.isEmpty then
+    val (profile, remainingArgs) = extractProfile(args)
+    Profile.current = profile
+
+    if remainingArgs.isEmpty then
       new Interactive(None).run()
     else
-      ParserForMethods(this).runOrExit(args.toIndexedSeq)
+      ParserForMethods(this).runOrExit(remainingArgs.toIndexedSeq)
+
+  private def extractProfile(args: Array[String]): (Option[String], Array[String]) =
+    val idx = args.indexOf("--profile")
+    if idx >= 0 && idx + 1 < args.length then
+      val profile = args(idx + 1)
+      val remaining = args.take(idx) ++ args.drop(idx + 2)
+      (Some(profile), remaining)
+    else
+      (None, args)
 
   @main(doc = "Launch interactive TUI mode")
   def interactive(
@@ -18,11 +30,24 @@ object Main:
   ): Unit =
     new Interactive(config).run()
 
+  @main(doc = "List available profiles")
+  def profiles(): Unit =
+    val all = Profile.listProfiles
+    if all.isEmpty then
+      Progress.info("No profiles found. Run 'ncimgupload' to create one.")
+    else
+      Progress.info("Available profiles:")
+      for name <- all do
+        val marker = if name == Profile.displayName then " (active)" else ""
+        Progress.info(s"  $name$marker")
+      Progress.info("")
+      Progress.info("Use --profile <name> to switch profiles.")
+
   @main(doc = "Interactive first-time setup")
   def setup(
       @arg(doc = "Config file path") config: Option[String] = None
   ): Unit =
-    val configDir = os.Path(System.getProperty("user.home")) / ".config" / "ncimgupload"
+    val configDir = Profile.configDir
     val configFile = configDir / "config.conf"
     if os.exists(configFile) then
       Progress.info(s"Config already exists at $configFile")

@@ -10,6 +10,9 @@ class Interactive(configPath: Option[String]):
     tui = new Tui()
     Progress.tuiMode = true
     try
+      if Profile.current.isEmpty then
+        selectProfileIfMultiple()
+
       NkConfig.tryLoad(configPath) match
         case Some(cfg) =>
           config = cfg
@@ -25,6 +28,20 @@ class Interactive(configPath: Option[String]):
     finally
       Progress.tuiMode = false
       tui.close()
+
+  private def selectProfileIfMultiple(): Unit =
+    val existing = Profile.listProfiles
+    if existing.size > 1 then
+      tui.println()
+      val options = existing :+ "+ Create new profile"
+      val choice = tui.selectMenu("Select profile:", options)
+      if choice >= 0 && choice < existing.size then
+        val selected = existing(choice)
+        Profile.current = if selected == "default" then None else Some(selected)
+      else if choice == existing.size then
+        val name = tui.readLine("Profile name")
+        if name.nonEmpty && name != "default" then
+          Profile.current = Some(name)
 
   // ──────────────────────────────────────────────
   //  First-run wizard
@@ -271,7 +288,8 @@ class Interactive(configPath: Option[String]):
           s"Last sync: ${Progress.formatDuration(seconds)} ago"
         }.getOrElse("No scans yet")
 
-        tui.println(tui.box("ncimgupload", Seq(
+        val profileLabel = Profile.current.map(p => s" ${tui.Dim}[$p]${tui.Reset}").getOrElse("")
+        tui.println(tui.box(s"ncimgupload$profileLabel", Seq(
           s"  ${config.nextcloudUrl} · ${tui.Dim}$lastScanStr${tui.Reset}",
         )))
         tui.println()
@@ -563,6 +581,7 @@ class Interactive(configPath: Option[String]):
         "Configuration:",
         Seq(
           "View current config",
+          "Switch profile",
           "Re-run setup wizard",
           "Back to main menu"
         )
@@ -572,6 +591,7 @@ class Interactive(configPath: Option[String]):
         case 0 =>
           tui.println()
           tui.showStatus(Seq(
+            "Profile"        -> Profile.displayName,
             "Nextcloud URL"  -> config.nextcloudUrl,
             "Username"       -> config.username,
             "Cloud path"     -> config.cloudPath,
@@ -586,10 +606,35 @@ class Interactive(configPath: Option[String]):
           tui.println()
           pressEnter()
         case 1 =>
+          switchProfile()
+          back = true
+        case 2 =>
           firstRunWizard()
           back = true
         case _ =>
           back = true
+
+  private def switchProfile(): Unit =
+    val existing = Profile.listProfiles
+    val options = existing :+ "+ Create new profile"
+    tui.println()
+    val choice = tui.selectMenu("Select profile:", options)
+    if choice >= 0 && choice < existing.size then
+      val selected = existing(choice)
+      Profile.current = if selected == "default" then None else Some(selected)
+      NkConfig.tryLoad(configPath) match
+        case Some(cfg) =>
+          config = cfg
+          tui.successMessage(s"Switched to profile: ${Profile.displayName}")
+        case None =>
+          tui.warnMessage(s"Profile '${Profile.displayName}' has no config. Running setup wizard.")
+          firstRunWizard()
+    else if choice == existing.size then
+      val name = tui.readLine("Profile name")
+      if name.nonEmpty && name != "default" then
+        Profile.current = Some(name)
+        tui.infoMessage(s"Created profile: $name. Running setup wizard.")
+        firstRunWizard()
 
   private def pressEnter(): Unit =
     tui.print(s"  ${tui.Dim}Press Enter to continue...${tui.Reset}")

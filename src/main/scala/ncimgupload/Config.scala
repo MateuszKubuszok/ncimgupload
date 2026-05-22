@@ -83,11 +83,9 @@ object NkConfig:
     ".webp", ".gif", ".3gp", ".mkv", ".avi"
   )
 
-  private val defaultDbPath: Path =
-    Path.of(System.getProperty("user.home"), ".local", "share", "ncimgupload", "state.db")
+  private def defaultDbPath: Path = Profile.dbPath
 
-  val defaultConfigPath: os.Path =
-    os.Path(System.getProperty("user.home")) / ".config" / "ncimgupload" / "config.conf"
+  def defaultConfigPath: os.Path = Profile.configPath
 
   def configExists: Boolean =
     os.exists(defaultConfigPath) ||
@@ -101,10 +99,10 @@ object NkConfig:
     val file = configPath
       .map(p => new File(p))
       .orElse(sys.env.get("NKUPLOAD_CONFIG").map(p => new File(p)))
-      .orElse(Option(new File(System.getProperty("user.home"), ".config/ncimgupload/config.conf")).filter(_.exists()))
+      .orElse(Option(defaultConfigPath.toIO).filter(_.exists()))
       .orElse(Option(new File("ncimgupload.conf")).filter(_.exists()))
       .getOrElse(throw new RuntimeException(
-        "No config file found. Create one at ~/.config/ncimgupload/config.conf or run 'ncimgupload setup'.\n" +
+        s"No config file found. Create one at $defaultConfigPath or run 'ncimgupload setup'.\n" +
         "See config.example.conf for the format."
       ))
 
