@@ -188,7 +188,7 @@ class WebDav(config: NkConfig):
     val moveResp = moveVerb(
       s"${config.uploadsWebDavUrl}/$uploadId/.file",
       headers = moveHeaders,
-      readTimeout = 120000,
+      readTimeout = 1800000, // 30 min — server needs time to assemble large files
       check = false
     )
 
