@@ -10,6 +10,8 @@ The user's requirements:
 3. Upload those missing files
 4. After confirming backups exist in multiple places, safely delete old files from the phone to free storage
 5. Make it reusable for other Nextcloud users
+6. Work as a standalone binary — no dev environment required
+7. Support multiple Nextcloud users on one computer
 
 ## Why a Standalone CLI Tool
 
@@ -17,146 +19,150 @@ Several alternatives were considered:
 
 **Fix the Android app** — The bug is in the Nextcloud Android app's upload queue management. The issue is complex (race conditions, retry logic, permission model changes by Google) and has resisted fixes for years. We can't wait.
 
-**Use Nextcloud Memories app** — Memories can detect which phone files are already in the cloud, but it lacks two critical features: (1) telling the Android app which files it missed, and (2) being able to delete confirmed-uploaded files from the phone. Building on Memories would require modifying a PHP server app and an Android app — more complex than a standalone tool.
+**Use Nextcloud Memories app** — Memories can detect which phone files are already in the cloud via its indexed database. We now use the Memories API for fast cloud scanning, but Memories alone lacks: (1) the ability to upload from phone via USB, and (2) safe deletion tracking. ncimgupload uses Memories as a data source, not a replacement.
 
 **Use rclone or similar** — rclone supports WebDAV but doesn't understand the phone-to-cloud sync workflow. It can't scan a phone via ADB, match files by camera naming conventions, or provide the safety guarantees needed for deletion.
 
-**A standalone CLI tool** is the simplest solution: it composes ADB (phone access) with WebDAV (cloud access) and a local SQLite database (state tracking) into a workflow purpose-built for this problem.
+**A standalone CLI tool** is the simplest solution: it composes ADB (phone access) with WebDAV (cloud access), the Memories API (fast indexing), and a local SQLite database (state tracking) into a workflow purpose-built for this problem.
 
-## Why Scala
+## Architecture Overview
 
-The user is a Scala developer (maintainer of the Kindlings library). While Python would be the typical choice for CLI glue code, Scala was explicitly preferred. The trade-offs:
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Main.scala (CLI entry + --profile parsing)                  │
+│    ├── Interactive.scala (TUI: wizard + menu)                │
+│    │     ├── Tui.scala (JLine3 rendering)                    │
+│    │     ├── FolderPicker.scala (Nextcloud folder browser)   │
+│    │     └── Profile.scala (multi-user isolation)            │
+│    └── CLI subcommands (scan, diff, upload, status, ...)     │
+├─────────────────────────────────────────────────────────────┤
+│  Cloud Scanning (auto-selected)                              │
+│    ├── MemoriesApi.scala (fast, index-based, cached)         │
+│    └── WebDav.scala (PROPFIND fallback, has file sizes)      │
+├─────────────────────────────────────────────────────────────┤
+│  Phone Access                                                │
+│    ├── Adb.scala (scan, pull, delete via ADB subprocess)     │
+│    └── AdbManager.scala (auto-download ADB binary)           │
+├─────────────────────────────────────────────────────────────┤
+│  Core Logic                                                  │
+│    ├── Sync.scala (diff: matched / missing / stripped)       │
+│    ├── Upload.scala (single + chunked + verify + mtime)      │
+│    ├── Checksums.scala (SHA-256 / MD5)                       │
+│    └── Cleanup.scala (safe deletion, currently disabled)     │
+├─────────────────────────────────────────────────────────────┤
+│  State                                                       │
+│    ├── Db.scala (SQLite: files, scan_history, chunked_uploads)│
+│    ├── Config.scala (HOCON loading + saving)                 │
+│    └── Models.scala (FileEntry, SyncRecord, DiffResult)      │
+└─────────────────────────────────────────────────────────────┘
+```
 
-**Scala advantages:**
-- Familiar language — faster development, easier maintenance
-- Strong type system catches bugs at compile time
-- Li Haoyi's ecosystem (os-lib, requests-scala, mainargs) provides Python-like ergonomics
-- JVM gives access to robust HTTP, XML, and SQLite libraries
+## Cloud Scanning Strategy
 
-**Scala disadvantages:**
-- JVM startup time (~1s for sbt run) — acceptable for a batch tool
-- Requires Java + sbt installed — but both are already present
-- Heavier than a shell script — but the tool's complexity (XML parsing, SQLite, chunked uploads) justifies it
+### Two-Backend Approach
+
+The tool auto-detects and uses the fastest available method:
+
+**1. Memories API (preferred):** Queries `/apps/memories/api/days` for a list of day summaries `{dayid, count}`, then fetches each day's photos via `/apps/memories/api/days/{dayId}`. Returns `basename`, `epoch`, `auid`, `mimetype` but NOT file size.
+
+- Very fast: reads from Memories' server-side database index
+- Cached locally: day responses stored as JSON in `~/.local/share/ncimgupload/memories-cache/`
+- Incremental: only re-fetches days where the photo count changed
+- Limitation: no file sizes → matching is filename-only, stripped metadata detection unavailable
+
+**2. WebDAV PROPFIND (fallback):** Lists top-level directories (depth=1) then scans each folder recursively (depth=infinity). Returns full metadata including file sizes, checksums, and ETags.
+
+- Slower: makes one HTTP request per top-level folder
+- Complete: has file sizes, enabling stripped metadata detection
+- No Memories app required
+
+### Why Not PROPFIND on Root
+
+A single PROPFIND with `Depth: infinity` on the Nextcloud root times out for large collections (tested: 120s timeout exceeded with ~47k files). Scanning folder-by-folder keeps each request manageable.
 
 ## File Matching Strategy
 
-The core challenge: files on the phone (e.g., `DCIM/Camera/IMG_20240520_091523.jpg`) may be stored under a different path on the cloud (e.g., `Photos/Phone/IMG_20240520_091523.jpg` or `Photos/Phone/2024/05/IMG_20240520_091523.jpg`).
+### Match by (filename, size)
 
-### Decision: Match by (filename, size)
+Android camera apps generate filenames with embedded timestamps (`IMG_20240520_091523.jpg`, `VID_20240520_183012.mp4`). These are practically unique. Adding file size as a discriminator makes false matches nearly impossible.
 
-Android camera apps generate filenames with embedded timestamps:
-- `IMG_20240520_091523.jpg` — photo taken 2024-05-20 at 09:15:23
-- `VID_20240520_183012.mp4` — video taken 2024-05-20 at 18:30:12
-- `PXL_20240520_091523.jpg` — Pixel camera variant
+This is the same strategy as Nextcloud Memories' BUID (Basename Unique ID) fallback: `md5(basename + size)`.
 
-These are unique enough that filename collision is extremely rare. Adding file size as a second discriminator makes accidental matches nearly impossible.
+When cloud file size is unknown (Memories API), matching falls back to filename only. This is safe because camera filenames with timestamps are unique within a user's collection.
 
-### Why Not Content Hashes
+### Stripped Metadata Detection
 
-Computing SHA-256 on the phone via ADB would require either:
-- `adb shell sha256sum` — not available on all Android devices
-- `adb pull` every file to hash locally — defeats the purpose of scanning (we'd download everything)
+When the same filename exists on both phone and cloud but the phone version is larger, this indicates the Nextcloud Android app uploaded the file without EXIF/GPS data (due to Android's media permission restrictions). The `strippedMetadata` category in `DiffResult` tracks these separately from normal size mismatches (where cloud > phone).
 
-Hashes are used as a **post-upload verification** step, not for matching. After uploading a file, we compute its local hash and compare against the cloud's `OC-Checksum` to confirm integrity.
+Repair flow: pull phone version → upload to the file's current cloud location (overwrite, not to unsorted folder) with `X-OC-Mtime` preserved. Requires explicit user confirmation. Dry-run mode available.
 
-### Why Not EXIF Metadata
+### Why Not Content Hashes for Matching
 
-EXIF dates could provide another matching dimension, but:
-- Extracting EXIF via ADB requires either pulling the file or running a tool on the phone
-- Not all files have EXIF (screenshots, WhatsApp images, videos)
-- Filename + size is sufficient for the camera use case
+Computing SHA-256 on the phone via ADB would require either `adb shell sha256sum` (not always available) or pulling every file locally (defeats scanning purpose). Hashes are used for **post-upload verification** only.
 
-## State Database (SQLite)
+## Upload Design
 
-### Why a Database
+### Timestamp Preservation
 
-A naive approach would scan both sources and compare in memory every time. This is wasteful:
-- ADB scanning over USB is slow (seconds for thousands of files)
-- WebDAV PROPFIND with `Depth: infinity` is slow for large directories
-- We need to track upload progress for resumability
-- We need to know which files have been checksum-verified for safe cleanup
-
-SQLite provides:
-- Cached scan results so `diff` works without re-scanning
-- Upload status tracking (`pending → uploading → uploaded → verified`)
-- Chunked upload resumability (which chunks are done)
-- Efficient queries (e.g., "verified files with mtime before X")
-
-### Why SQLite Over JSON
-
-With thousands of files, JSON becomes:
-- Slow to parse/write on every operation
-- No support for partial updates (must rewrite entire file)
-- No concurrent access protection
-- No indexing for queries
-
-SQLite is in the JVM via JDBC (sqlite-jdbc), needs no server, and handles all of this.
-
-## WebDAV Protocol Choices
-
-### Custom HTTP Methods
-
-The Nextcloud WebDAV API uses HTTP methods not in the standard set:
-- `PROPFIND` — list files with metadata
-- `MKCOL` — create directories / upload sessions
-- `MOVE` — assemble chunked uploads / rename files
-
-The `requests-scala` library only has built-in methods for GET/POST/PUT/DELETE/HEAD/OPTIONS/PATCH. For custom methods, we create `Requester` instances:
-
-```scala
-private val propfindVerb = new requests.Requester("PROPFIND", session)
-```
+Every upload sets the `X-OC-Mtime` header to the phone file's original modification time. Without this, Nextcloud sets the upload timestamp as mtime, breaking timeline ordering in Memories and other photo apps.
 
 ### Chunked Upload v2
 
-Files over 100MB (configurable) use Nextcloud's chunked upload protocol:
-
+Files over 100MB use Nextcloud's chunked upload protocol:
 1. **MKCOL** creates a temporary upload directory at `/dav/uploads/{user}/{uuid}/`
 2. **PUT** uploads numbered chunks (00001, 00002, ...) into that directory
 3. **MOVE** of the virtual `.file` resource triggers server-side assembly
 
-This provides:
-- **Resumability**: if upload is interrupted, existing chunks are preserved for 24 hours
-- **Integrity**: `OC-Checksum` header on the MOVE request lets the server verify the assembled file
-- **Progress tracking**: we can report per-chunk progress for large videos
+The MOVE request carries both `OC-Checksum` (integrity) and `X-OC-Mtime` (timestamp preservation).
 
-### PROPFIND Depth: infinity
+### Upload from Diff Result
 
-For scanning the cloud, we use `Depth: infinity` to get the entire directory tree in one request. This is efficient for our use case (hundreds to low thousands of files) but could be problematic for very large collections. The alternative (recursive `Depth: 1` requests) would require many round trips.
+The TUI's "Scan & Upload" flow passes the exact list of missing files from `Sync.diff` directly to `Upload.uploadFiles`. It does NOT re-query the database for pending files, avoiding stale state issues where the DB hasn't been properly updated by the cloud scan.
+
+## Multi-Profile Support
+
+Each profile name maps to isolated paths:
+- Config: `~/.config/ncimgupload/{name}/config.conf`
+- Database: `~/.local/share/ncimgupload/{name}/state.db`
+- Cache: `~/.local/share/ncimgupload/{name}/memories-cache/`
+
+The default (unnamed) profile uses the base directories without a subdirectory, preserving backward compatibility.
+
+Profile is selected via `--profile <name>` (parsed before mainargs) or the TUI profile picker (shown when multiple profiles exist). The `Profile` singleton holds the current selection and provides path resolution used by `Config`, `Db`, and `MemoriesApi`.
 
 ## Safety Design
 
-The cleanup command is the most dangerous part of the tool. Design principles:
+The cleanup command (phone file deletion) is **disabled by default**. It requires `NKUPLOAD_ENABLE_CLEANUP=1` env var to override. This remains disabled until backup reliability is proven through real-world usage.
 
-1. **Dry-run by default**: without `--yes`, cleanup only shows what would be deleted
-2. **Interactive confirmation**: even with `--yes`, prompts "Delete N files (X GB)? [y/N]"
-3. **Verified-only default**: only deletes files whose checksums have been verified in the cloud
-4. **Pre-deletion cloud check**: HEAD request confirms each file still exists on the cloud before deleting from phone
-5. **Deletion log**: every deletion is logged with timestamp, path, size, and verification status to `~/.local/share/ncimgupload/cleanup.log`
-6. **Never deletes from cloud**: the tool only removes files from the phone
-7. **Date filtering required**: `--before DATE` scopes deletions to files older than a specific date
+When eventually enabled, safety guards include:
+1. Dry-run by default (requires `--yes`)
+2. Interactive confirmation
+3. Verified-only: only deletes checksum-verified files
+4. Pre-deletion cloud check: HEAD request confirms file still exists
+5. Deletion log: every action logged to `cleanup.log`
+6. Never deletes from cloud
+7. Date filtering required (`--before DATE`)
+
+## GraalVM Native Image
+
+The tool compiles to a single ~79MB native binary via GraalVM native-image. Key configuration:
+
+- `--initialize-at-build-time=scala,geny` — avoids Scala 3 `LazyVals` reflection failures at runtime
+- `--enable-url-protocols=https` — required for WebDAV and ADB downloads
+- Reflection config for: `requests-scala` lazy val fields, SQLite JDBC, JLine3 terminal providers, Typesafe Config
+- JLine3 and SQLite JDBC both ship with their own native-image metadata (`META-INF/native-image/`)
+- Config file paths use absolute paths via sbt's `baseDirectory.value`
 
 ## Configuration Design
 
-HOCON format via Typesafe Config was chosen over:
-- **INI**: too simple, no lists or nested structure
-- **YAML**: requires a third-party parser
-- **JSON**: verbose, no comments
-- **TOML**: not in the JVM ecosystem without extra dependencies
+HOCON format via Typesafe Config. Search order: `--config` > `$NKUPLOAD_CONFIG` > profile-aware default path > `./ncimgupload.conf`.
 
-HOCON supports comments, lists, nested objects, and environment variable substitution natively. Typesafe Config is battle-tested and tiny.
-
-Password handling:
-- Config file should be `chmod 600`; tool warns if permissions are too open
-- Password can be set via `NKUPLOAD_PASSWORD` env var to avoid storing in file
-- Password is never logged or printed (masked in verbose output)
+Password handling: config file should be `chmod 600`; tool warns if permissions are too open. Password can be set via `NKUPLOAD_PASSWORD` env var.
 
 ## Future Considerations
 
-Things deliberately not built yet:
-
-- **Parallel uploads**: could use `concurrent.futures.ThreadPoolExecutor` but USB/network bandwidth is usually the bottleneck, not concurrency
-- **Date-organized cloud directories**: uploading to `Photos/Phone/2024/05/` instead of flat — configurable but not yet implemented
-- **Batch verification**: `verify` command currently only reports status; could re-download and verify existing cloud files
-- **Nextcloud Memories integration**: could use Memories API to cross-reference, but WebDAV PROPFIND is sufficient
-- **GraalVM native image**: would eliminate JVM startup time but adds build complexity
+- **Parallel uploads**: USB/network bandwidth is usually the bottleneck, not concurrency
+- **Date-organized cloud directories**: uploading to `Photos/Phone/2024/05/` instead of flat
+- **Batch verification**: `verify` command could re-download and verify existing cloud files
+- **MTP support**: access phone via File Transfer mode instead of ADB (avoids USB debugging requirement), feasible on Linux via `jmtpfs`
+- **ETag-based incremental PROPFIND**: cache ETags per folder, skip unchanged folders on WebDAV scan

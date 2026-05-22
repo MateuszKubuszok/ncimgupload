@@ -20,26 +20,32 @@ The interactive wizard will guide you through:
 
 ## Features
 
+- **Memories API integration** — uses the Nextcloud Memories app's indexed database for near-instant cloud scanning. Falls back to WebDAV if Memories isn't installed. Cached locally so repeat scans are fast.
 - **Full-Nextcloud scan** — matches phone files against your entire Nextcloud, not just one folder. Files you've moved or organized are correctly detected as already backed up.
-- **Metadata repair** — detects files where the Nextcloud Android app stripped EXIF/GPS data (phone version is larger) and offers to re-upload the complete version.
+- **Metadata repair** — detects files where the Nextcloud Android app stripped EXIF/GPS data (phone version is larger) and offers to re-upload the complete version. Dry-run mode available.
+- **Timestamp preservation** — uploads set `X-OC-Mtime` so files keep their original creation date in Nextcloud, not the upload time.
 - **Chunked uploads** — files over 100 MB use Nextcloud's chunked upload protocol for reliability.
 - **SHA-256 verification** — every upload is checksum-verified against the server.
 - **Resumable** — SQLite state database tracks progress. Interrupted uploads can be resumed.
+- **Multi-profile** — `--profile <name>` isolates config, database, and cache per Nextcloud user. Multiple users on one computer.
 - **Interactive TUI** — arrow-key menus, progress bars, guided setup. No config files to write by hand.
 - **CLI mode** — all subcommands available for scripting and power users.
 
 ## CLI Commands
 
 ```bash
-ncimgupload                  # interactive TUI (default)
-ncimgupload interactive      # explicit TUI mode
-ncimgupload setup            # create config interactively
-ncimgupload scan             # scan phone + cloud
-ncimgupload scan-cloud --all # scan entire Nextcloud
-ncimgupload diff             # compare phone vs cloud
-ncimgupload upload           # upload missing files
-ncimgupload status           # show database summary
-ncimgupload verify           # check uploaded file integrity
+ncimgupload                       # interactive TUI (default)
+ncimgupload interactive           # explicit TUI mode
+ncimgupload --profile alice       # TUI with named profile
+ncimgupload setup                 # create config interactively
+ncimgupload scan                  # scan phone + cloud
+ncimgupload scan-cloud --all      # scan entire Nextcloud via WebDAV
+ncimgupload scan-cloud --memories # scan via Memories API (fast)
+ncimgupload diff                  # compare phone vs cloud
+ncimgupload upload                # upload missing files
+ncimgupload status                # show database summary
+ncimgupload profiles              # list configured profiles
+ncimgupload verify                # check uploaded file integrity
 ```
 
 ## Building from Source
@@ -58,11 +64,23 @@ Or run directly via sbt (requires JVM):
 sbt "run status"
 ```
 
+## Multi-Profile Support
+
+Multiple Nextcloud users can each have their own isolated configuration:
+
+```bash
+ncimgupload --profile alice       # uses ~/.config/ncimgupload/alice/config.conf
+ncimgupload --profile bob         # uses ~/.config/ncimgupload/bob/config.conf
+ncimgupload profiles              # list all profiles
+```
+
+In TUI mode, if multiple profiles exist, you're prompted to choose on startup. Each profile has its own config, database, and Memories cache.
+
 ## Configuration
 
-On first run, the wizard creates `~/.config/ncimgupload/config.conf`. You can also create it manually — see `config.example.conf`.
+On first run, the wizard creates `~/.config/ncimgupload/config.conf` (or `~/.config/ncimgupload/{profile}/config.conf` for named profiles). You can also create it manually — see `config.example.conf`.
 
-Config search order: `--config` flag > `$NKUPLOAD_CONFIG` env var > `~/.config/ncimgupload/config.conf` > `./ncimgupload.conf`
+Config search order: `--config` flag > `$NKUPLOAD_CONFIG` env var > `~/.config/ncimgupload/[profile/]config.conf` > `./ncimgupload.conf`
 
 Password can be set via `NKUPLOAD_PASSWORD` env var instead of the config file.
 
