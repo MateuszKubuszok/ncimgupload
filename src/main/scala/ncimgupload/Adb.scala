@@ -93,10 +93,23 @@ class Adb(config: NkConfig):
   def pullFile(remotePath: String, localPath: os.Path): Boolean =
     val fullRemote = if remotePath.startsWith("/") then remotePath else s"$phoneBase/$remotePath"
     os.makeDir.all(localPath / os.up)
-    val result = adb("pull", fullRemote, localPath.toString)
-    if result.exitCode != 0 then
-      Progress.error(s"Failed to pull $fullRemote: ${result.err.text().trim}")
-    result.exitCode == 0
+    try
+      val result = os.proc(adbCmd +: deviceArgs ++: Seq("pull", fullRemote, localPath.toString)).call(
+        check = false,
+        timeout = 1800000 // 30 minutes for large files
+      )
+      if result.exitCode != 0 then
+        val err = result.err.text().trim
+        val out = result.out.text().trim
+        Progress.error(s"Failed to pull $fullRemote: ${if err.nonEmpty then err else out}")
+      result.exitCode == 0
+    catch
+      case e: java.util.concurrent.TimeoutException =>
+        Progress.error(s"Timed out pulling $fullRemote (file may be too large for USB transfer)")
+        false
+      case e: Exception =>
+        Progress.error(s"Failed to pull $fullRemote: ${e.getMessage}")
+        false
 
   def deleteFile(remotePath: String): Boolean =
     val fullRemote = if remotePath.startsWith("/") then remotePath else s"$phoneBase/$remotePath"
