@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+            artifact: ncimgupload-linux-x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            artifact: ncimgupload-linux-arm64
+          - os: macos-latest
+            arch: arm64
+            artifact: ncimgupload-macos-arm64
+          - os: windows-latest
+            arch: amd64
+            artifact: ncimgupload-windows-x64
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.artifact }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalce'
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@v1
+
+      - name: Run tests
+        run: sbt test
+
+      - name: Build native image (unix)
+        if: runner.os != 'Windows'
+        run: sbt nativeImage
+
+      - name: Build native image (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: sbt nativeImage
+
+      - name: Rename artifact (unix)
+        if: runner.os != 'Windows'
+        run: cp target/native-image/ncimgupload ${{ matrix.artifact }}
+
+      - name: Rename artifact (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp target/native-image/ncimgupload.exe ${{ matrix.artifact }}.exe
+
+      - name: Upload artifact (unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+      - name: Upload artifact (windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/ncimgupload-linux-x64/ncimgupload-linux-x64
+            artifacts/ncimgupload-linux-arm64/ncimgupload-linux-arm64
+            artifacts/ncimgupload-macos-arm64/ncimgupload-macos-arm64
+            artifacts/ncimgupload-windows-x64/ncimgupload-windows-x64.exe
