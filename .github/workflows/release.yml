@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["*"]
 
 permissions:
   contents: write
@@ -14,16 +13,12 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            arch: amd64
             artifact: ncimgupload-linux-x64
           - os: ubuntu-24.04-arm
-            arch: arm64
             artifact: ncimgupload-linux-arm64
           - os: macos-latest
-            arch: arm64
             artifact: ncimgupload-macos-arm64
           - os: windows-latest
-            arch: amd64
             artifact: ncimgupload-windows-x64
 
     runs-on: ${{ matrix.os }}
@@ -32,25 +27,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: coursier/cache-action@v8
+
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '25'
           distribution: 'graalce'
 
-      - name: Set up sbt
-        uses: sbt/setup-sbt@v1
+      - uses: coursier/setup-action@v3.0.0
+        with:
+          apps: sbt
 
       - name: Run tests
         run: sbt test
 
-      - name: Build native image (unix)
-        if: runner.os != 'Windows'
-        run: sbt nativeImage
-
-      - name: Build native image (windows)
-        if: runner.os == 'Windows'
-        shell: bash
+      - name: Build native image
         run: sbt nativeImage
 
       - name: Rename artifact (unix)
@@ -85,7 +77,7 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
