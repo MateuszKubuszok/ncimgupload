@@ -33,7 +33,7 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '25'
-          distribution: 'graalce'
+          distribution: 'graalvm'
 
       - uses: coursier/setup-action@v3.0.0
         with:
